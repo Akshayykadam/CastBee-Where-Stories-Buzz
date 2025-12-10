@@ -313,7 +313,7 @@ export default function PlayerScreen() {
 
           {/* Playback Speed */}
           <View style={styles.menuSection}>
-            <Text style={styles.menuLabel}>Playback Speed</Text>
+            <Text style={[styles.menuLabel, { marginBottom: 10 }]}>Playback Speed</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsRow}>
               {[0.5, 0.8, 1.0, 1.2, 1.5, 2.0].map(speed => (
                 <Pressable
@@ -333,7 +333,7 @@ export default function PlayerScreen() {
 
           {/* Download */}
           <View style={styles.menuSection}>
-            <Text style={styles.menuLabel}>Download</Text>
+            <Text style={[styles.menuLabel, { marginBottom: 10 }]}>Download</Text>
             <Pressable
               style={({ pressed }) => [styles.menuButton, { opacity: pressed ? 0.7 : 1 }]}
               onPress={() => {
@@ -544,13 +544,12 @@ const styles = StyleSheet.create({
   menuLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 12,
   },
   menuLabel: {
     fontSize: 14,
     color: Colors.primaryText,
     fontWeight: '500',
-    marginBottom: 10,
   },
   activeLabel: {
     fontSize: 12,
