@@ -13,6 +13,9 @@ import {
   MoreVertical,
   X,
   Clock,
+  ListMusic,
+  Trash2,
+  GripVertical,
 } from "lucide-react-native";
 import React, { useState } from "react";
 import {
@@ -28,6 +31,7 @@ import {
   ActivityIndicator,
   Modal,
   TouchableWithoutFeedback,
+  FlatList,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Image } from "expo-image";
@@ -36,6 +40,8 @@ import Colors from "@/constants/colors";
 import { usePlayer } from "@/contexts/PlayerContext";
 import { useLikedEpisodes } from "@/contexts/LikedEpisodesContext";
 import { useDownloads } from "@/contexts/DownloadContext";
+import { Episode } from "@/types/podcast";
+import WaveformSeekBar from "@/components/WaveformSeekBar";
 
 const { width } = Dimensions.get("window");
 
@@ -51,6 +57,15 @@ const formatTime = (millis: number): string => {
       .padStart(2, "0")}`;
   }
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+};
+
+const formatDuration = (seconds: number): string => {
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  if (hrs > 0) {
+    return `${hrs}h ${mins}m`;
+  }
+  return `${mins}m`;
 };
 
 export default function PlayerScreen() {
@@ -73,12 +88,18 @@ export default function PlayerScreen() {
     sleepTimer,
     startSleepTimer,
     changePlaybackRate,
+    queue,
+    setQueue,
+    addToQueue,
+    getHalfPlayedEpisodes,
+    podcastEpisodes,
   } = usePlayer();
 
   const [isSeeking, setIsSeeking] = useState(false);
   const [seekPosition, setSeekPosition] = useState(0);
   const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
+  const [queueVisible, setQueueVisible] = useState(false);
   const { isLiked, toggleLike } = useLikedEpisodes();
   const { isDownloaded, getDownloadProgress, downloadEpisode, deleteDownload } = useDownloads();
 
@@ -102,6 +123,30 @@ export default function PlayerScreen() {
     }
   };
 
+  const removeFromQueue = (index: number) => {
+    setQueue(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const clearQueue = () => {
+    setQueue([]);
+  };
+
+  // Get upcoming episodes from same podcast for "Up Next" section
+  const getUpNextEpisodes = (): Episode[] => {
+    if (!currentEpisode || !podcastEpisodes || podcastEpisodes.length === 0) {
+      return [];
+    }
+
+    const currentIndex = podcastEpisodes.findIndex(e => e.id === currentEpisode.id);
+    if (currentIndex === -1) return podcastEpisodes.slice(0, 3);
+
+    // Get next 3 episodes after current
+    return podcastEpisodes.slice(currentIndex + 1, currentIndex + 4);
+  };
+
+  const halfPlayedEpisodes = getHalfPlayedEpisodes();
+  const upNextEpisodes = getUpNextEpisodes();
+
   if (!currentEpisode || !currentPodcast) {
     return (
       <View style={styles.container}>
@@ -120,31 +165,71 @@ export default function PlayerScreen() {
   }
 
   const currentPosition = isSeeking ? seekPosition : position;
+
+  const renderQueueItem = ({ item, index }: { item: Episode; index: number }) => (
+    <View style={styles.queueItem}>
+      <View style={styles.queueItemLeft}>
+        <GripVertical color={Colors.secondaryText} size={20} />
+        <Image
+          source={{ uri: item.artwork || currentPodcast?.artworkUrl600 }}
+          style={styles.queueItemArtwork}
+          contentFit="cover"
+        />
+        <View style={styles.queueItemInfo}>
+          <Text style={styles.queueItemTitle} numberOfLines={2}>
+            {item.title}
+          </Text>
+          <Text style={styles.queueItemSubtitle} numberOfLines={1}>
+            {item.podcastTitle || currentPodcast?.collectionName}
+          </Text>
+        </View>
+      </View>
+      <Pressable
+        onPress={() => removeFromQueue(index)}
+        style={({ pressed }) => [styles.removeButton, { opacity: pressed ? 0.7 : 1 }]}
+      >
+        <Trash2 color={Colors.accent} size={18} />
+      </Pressable>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       <SafeAreaView edges={["top", "bottom"]} style={styles.safeArea}>
         <View style={styles.header}>
-          <Pressable onPress={handleBack}>
+          <Pressable onPress={handleBack} style={styles.headerButton}>
             <ChevronDown color={Colors.primaryText} size={32} />
           </Pressable>
+
           <Text style={styles.headerTitle} numberOfLines={1}>
             Now Playing
           </Text>
-          <Pressable onPress={() => toggleLike({
-            ...currentEpisode,
-            artwork: currentEpisode.artwork || currentPodcast.artworkUrl600,
-            podcastTitle: currentPodcast.collectionName,
-            artistName: currentPodcast.artistName,
-          })} style={{ padding: 8 }}>
-            <Heart
-              color={isLiked(currentEpisode.id) ? Colors.accent : Colors.primaryText}
-              size={24}
-              fill={isLiked(currentEpisode.id) ? Colors.accent : "transparent"}
-            />
-          </Pressable>
-          <Pressable onPress={() => setMenuVisible(true)} style={{ padding: 8, marginRight: -8 }}>
-            <MoreVertical color={Colors.primaryText} size={24} />
-          </Pressable>
+
+          <View style={styles.headerRight}>
+            <Pressable onPress={() => setQueueVisible(true)} style={styles.headerButton}>
+              <ListMusic color={Colors.primaryText} size={24} />
+              {queue.length > 0 && (
+                <View style={styles.queueBadge}>
+                  <Text style={styles.queueBadgeText}>{queue.length}</Text>
+                </View>
+              )}
+            </Pressable>
+            <Pressable onPress={() => toggleLike({
+              ...currentEpisode,
+              artwork: currentEpisode.artwork || currentPodcast.artworkUrl600,
+              podcastTitle: currentPodcast.collectionName,
+              artistName: currentPodcast.artistName,
+            })} style={styles.headerButton}>
+              <Heart
+                color={isLiked(currentEpisode.id) ? Colors.accent : Colors.primaryText}
+                size={24}
+                fill={isLiked(currentEpisode.id) ? Colors.accent : "transparent"}
+              />
+            </Pressable>
+            <Pressable onPress={() => setMenuVisible(true)} style={styles.headerButton}>
+              <MoreVertical color={Colors.primaryText} size={24} />
+            </Pressable>
+          </View>
         </View>
 
         <ScrollView
@@ -176,22 +261,11 @@ export default function PlayerScreen() {
           </View>
 
           <View style={styles.progressContainer}>
-            <Slider
-              style={styles.slider}
-              minimumValue={0}
-              maximumValue={duration > 0 ? duration : 0.001} // Prevent 0 maximumValue which might cause crash if min is also 0
-              value={currentPosition}
-              onValueChange={(value: number) => {
-                setIsSeeking(true);
-                setSeekPosition(value);
-              }}
-              onSlidingComplete={(value: number) => {
-                setIsSeeking(false);
-                seekTo(value);
-              }}
-              minimumTrackTintColor={Colors.accent}
-              maximumTrackTintColor={Colors.border}
-              thumbTintColor={Colors.accent}
+            <WaveformSeekBar
+              progress={duration > 0 ? currentPosition / duration : 0}
+              duration={duration}
+              onSeek={(pos) => seekTo(pos)}
+              height={50}
             />
             <View style={styles.timeContainer}>
               <Text style={styles.timeText}>{formatTime(currentPosition)}</Text>
@@ -233,7 +307,30 @@ export default function PlayerScreen() {
             </Pressable>
           </View>
 
-
+          {/* Up Next Preview */}
+          {(queue.length > 0 || upNextEpisodes.length > 0) && (
+            <Pressable
+              style={styles.upNextPreview}
+              onPress={() => setQueueVisible(true)}
+            >
+              <View style={styles.upNextHeader}>
+                <ListMusic color={Colors.primaryText} size={18} />
+                <Text style={styles.upNextTitle}>Up Next</Text>
+                <Text style={styles.upNextCount}>
+                  {queue.length > 0 ? `${queue.length} in queue` : `${upNextEpisodes.length} more`}
+                </Text>
+              </View>
+              {queue.length > 0 ? (
+                <Text style={styles.upNextEpisode} numberOfLines={1}>
+                  {queue[0].title}
+                </Text>
+              ) : upNextEpisodes.length > 0 ? (
+                <Text style={styles.upNextEpisode} numberOfLines={1}>
+                  {upNextEpisodes[0].title}
+                </Text>
+              ) : null}
+            </Pressable>
+          )}
 
           {currentEpisode.description && (
             <Pressable style={styles.description} onPress={toggleDescription}>
@@ -256,6 +353,168 @@ export default function PlayerScreen() {
         </ScrollView>
       </SafeAreaView>
 
+      {/* Queue Modal */}
+      <Modal
+        visible={queueVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setQueueVisible(false)}
+      >
+        <TouchableWithoutFeedback onPress={() => setQueueVisible(false)}>
+          <View style={styles.modalOverlay} />
+        </TouchableWithoutFeedback>
+        <View style={[styles.modalContent, styles.queueModalContent]}>
+          <View style={styles.dragHandle} />
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Queue</Text>
+            <View style={styles.queueHeaderRight}>
+              {queue.length > 0 && (
+                <Pressable
+                  onPress={clearQueue}
+                  style={({ pressed }) => [styles.clearButton, { opacity: pressed ? 0.7 : 1 }]}
+                >
+                  <Text style={styles.clearButtonText}>Clear All</Text>
+                </Pressable>
+              )}
+              <Pressable
+                onPress={() => setQueueVisible(false)}
+                style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1, marginLeft: 16 })}
+              >
+                <X color={Colors.primaryText} size={20} />
+              </Pressable>
+            </View>
+          </View>
+
+          {/* Now Playing */}
+          <View style={styles.nowPlayingSection}>
+            <Text style={styles.queueSectionTitle}>Now Playing</Text>
+            <View style={styles.nowPlayingItem}>
+              <Image
+                source={{ uri: currentPodcast.artworkUrl600 }}
+                style={styles.nowPlayingArtwork}
+                contentFit="cover"
+              />
+              <View style={styles.nowPlayingInfo}>
+                <Text style={styles.nowPlayingTitle} numberOfLines={2}>
+                  {currentEpisode.title}
+                </Text>
+                <Text style={styles.nowPlayingSubtitle} numberOfLines={1}>
+                  {currentPodcast.collectionName}
+                </Text>
+              </View>
+              {isPlaying ? (
+                <View style={styles.playingIndicator}>
+                  <View style={[styles.playingBar, styles.playingBar1]} />
+                  <View style={[styles.playingBar, styles.playingBar2]} />
+                  <View style={[styles.playingBar, styles.playingBar3]} />
+                </View>
+              ) : (
+                <Pause color={Colors.accent} size={20} />
+              )}
+            </View>
+          </View>
+
+          {/* Queue */}
+          {queue.length > 0 && (
+            <View style={styles.queueSection}>
+              <Text style={styles.queueSectionTitle}>Up Next ({queue.length})</Text>
+              <FlatList
+                data={queue}
+                renderItem={renderQueueItem}
+                keyExtractor={(item, index) => `queue-${item.id}-${index}`}
+                style={styles.queueList}
+                showsVerticalScrollIndicator={false}
+              />
+            </View>
+          )}
+
+          {/* Half-played episodes */}
+          {halfPlayedEpisodes.length > 0 && queue.length === 0 && (
+            <View style={styles.queueSection}>
+              <Text style={styles.queueSectionTitle}>Continue Listening</Text>
+              {halfPlayedEpisodes.slice(0, 3).map((ep, index) => (
+                <Pressable
+                  key={`half-${ep.episodeId}-${index}`}
+                  style={styles.continueItem}
+                  onPress={() => {
+                    addToQueue({
+                      id: ep.episodeId,
+                      title: ep.episodeTitle || 'Untitled',
+                      description: '',
+                      audioUrl: ep.audioUrl || '',
+                      pubDate: '',
+                      duration: ep.duration,
+                      artwork: ep.episodeArtwork || ep.podcastArtwork || '',
+                      podcastTitle: ep.podcastTitle,
+                    });
+                    setQueueVisible(false);
+                  }}
+                >
+                  <Image
+                    source={{ uri: ep.podcastArtwork }}
+                    style={styles.queueItemArtwork}
+                    contentFit="cover"
+                  />
+                  <View style={styles.queueItemInfo}>
+                    <Text style={styles.queueItemTitle} numberOfLines={1}>
+                      {ep.episodeTitle}
+                    </Text>
+                    <Text style={styles.queueItemSubtitle} numberOfLines={1}>
+                      {ep.podcastTitle} • {Math.round((ep.position / ep.duration) * 100)}% played
+                    </Text>
+                  </View>
+                  <Text style={styles.addToQueueText}>+ Add</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {/* More from this podcast */}
+          {upNextEpisodes.length > 0 && queue.length === 0 && (
+            <View style={styles.queueSection}>
+              <Text style={styles.queueSectionTitle}>More from {currentPodcast.collectionName}</Text>
+              {upNextEpisodes.map((ep, index) => (
+                <Pressable
+                  key={`upnext-${ep.id}-${index}`}
+                  style={styles.continueItem}
+                  onPress={() => {
+                    addToQueue(ep);
+                    setQueueVisible(false);
+                  }}
+                >
+                  <Image
+                    source={{ uri: ep.artwork || currentPodcast.artworkUrl600 }}
+                    style={styles.queueItemArtwork}
+                    contentFit="cover"
+                  />
+                  <View style={styles.queueItemInfo}>
+                    <Text style={styles.queueItemTitle} numberOfLines={1}>
+                      {ep.title}
+                    </Text>
+                    <Text style={styles.queueItemSubtitle} numberOfLines={1}>
+                      {ep.duration ? formatDuration(ep.duration) : ''}
+                    </Text>
+                  </View>
+                  <Text style={styles.addToQueueText}>+ Add</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {/* Empty state */}
+          {queue.length === 0 && halfPlayedEpisodes.length === 0 && upNextEpisodes.length === 0 && (
+            <View style={styles.emptyQueue}>
+              <ListMusic color={Colors.secondaryText} size={48} />
+              <Text style={styles.emptyQueueTitle}>Your queue is empty</Text>
+              <Text style={styles.emptyQueueText}>
+                Add episodes to your queue from the podcast page
+              </Text>
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      {/* Options Modal */}
       <Modal
         visible={menuVisible}
         transparent
@@ -387,15 +646,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "600" as const,
     color: Colors.primaryText,
-    flex: 1,
+    position: 'absolute',
+    left: 0,
+    right: 0,
     textAlign: "center",
+  },
+  headerButton: {
+    padding: 8,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   content: {
     flex: 1,
   },
   scrollContent: {
     paddingHorizontal: 24,
-    paddingBottom: 120, // Increased to ensure description is fully visible
+    paddingBottom: 120,
     flexGrow: 1,
   },
   emptyState: {
@@ -464,11 +732,55 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-
   speedText: {
     fontSize: 16,
     fontWeight: "600" as const,
     color: Colors.primaryText,
+  },
+  // Secondary Controls Row
+  secondaryControls: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 32,
+    marginBottom: 24,
+  },
+  secondaryControlButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: Colors.cardBg,
+    position: 'relative',
+  },
+  speedButtonText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.primaryText,
+  },
+  queueBadgeSmall: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    backgroundColor: Colors.accent,
+    borderRadius: 8,
+    minWidth: 14,
+    height: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 3,
+  },
+  queueBadgeTextSmall: {
+    color: '#000',
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  timerText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: Colors.accent,
+    marginTop: 2,
   },
   description: {
     paddingTop: 16,
@@ -497,7 +809,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: Colors.primaryText,
     top: 9,
-    left: 9, // Adjust based on icon size and desired centering
+    left: 9,
   },
   downloadButtonPill: {
     flexDirection: 'row',
@@ -516,6 +828,54 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
+  // Up Next Preview
+  upNextPreview: {
+    backgroundColor: Colors.cardBg,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 16,
+  },
+  upNextHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+    gap: 8,
+  },
+  upNextTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.primaryText,
+    flex: 1,
+  },
+  upNextCount: {
+    fontSize: 12,
+    color: Colors.secondaryText,
+  },
+  upNextEpisode: {
+    fontSize: 13,
+    color: Colors.secondaryText,
+  },
+
+  // Queue Badge
+  queueBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: Colors.accent,
+    borderRadius: 10,
+    minWidth: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  queueBadgeText: {
+    color: '#000',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+
+  // Modal styles
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -527,16 +887,34 @@ const styles = StyleSheet.create({
     padding: 20,
     paddingBottom: 32,
   },
+  queueModalContent: {
+    maxHeight: '80%',
+  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24, // Increased spacing
+    marginBottom: 24,
   },
   modalTitle: {
-    fontSize: 20,  // Increased from 18
-    fontWeight: '700', // Bolder
+    fontSize: 20,
+    fontWeight: '700',
     color: Colors.primaryText,
+  },
+  queueHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  clearButton: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: Colors.border,
+    borderRadius: 16,
+  },
+  clearButtonText: {
+    color: Colors.accent,
+    fontSize: 13,
+    fontWeight: '600',
   },
   menuSection: {
     marginBottom: 16,
@@ -544,28 +922,28 @@ const styles = StyleSheet.create({
   menuLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16, // Increased from 12
+    marginBottom: 16,
   },
   menuLabel: {
-    fontSize: 16, // Increased from 14
+    fontSize: 16,
     color: Colors.primaryText,
-    fontWeight: '600', // Bolder
+    fontWeight: '600',
   },
   activeLabel: {
-    fontSize: 14, // Increased from 12
+    fontSize: 14,
     color: Colors.accent,
     fontWeight: '500',
     marginLeft: 8,
   },
   chipsRow: {
     flexDirection: 'row',
-    gap: 12, // Increased gap
-    flexWrap: 'wrap', // Allow wrap if needed on small screens, though usually row is fine
+    gap: 12,
+    flexWrap: 'wrap',
   },
   chip: {
-    paddingHorizontal: 16, // Increased from 12
-    paddingVertical: 10,   // Increased from 6
-    borderRadius: 20,      // Increased form 16
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
     backgroundColor: Colors.secondaryText + '33',
     borderWidth: 1,
     borderColor: Colors.border,
@@ -576,7 +954,7 @@ const styles = StyleSheet.create({
   },
   chipText: {
     color: Colors.primaryText,
-    fontSize: 14, // Increased from 12
+    fontSize: 14,
     fontWeight: '600',
   },
   chipTextActive: {
@@ -590,14 +968,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: Colors.border,
-    padding: 16, // Increased from 12
-    borderRadius: 16, // Increased radius
+    padding: 16,
+    borderRadius: 16,
     justifyContent: 'center',
     marginTop: 8,
   },
   menuButtonText: {
     color: Colors.primaryText,
-    fontSize: 16, // Increased from 14
+    fontSize: 16,
     fontWeight: '600',
   },
   dragHandle: {
@@ -609,5 +987,135 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginBottom: 16,
     marginTop: 8,
+  },
+
+  // Queue styles
+  nowPlayingSection: {
+    marginBottom: 20,
+  },
+  queueSection: {
+    marginBottom: 20,
+  },
+  queueSectionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: Colors.secondaryText,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  nowPlayingItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.border,
+    borderRadius: 12,
+    padding: 12,
+    gap: 12,
+  },
+  nowPlayingArtwork: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+    backgroundColor: Colors.cardBg,
+  },
+  nowPlayingInfo: {
+    flex: 1,
+  },
+  nowPlayingTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: Colors.primaryText,
+    marginBottom: 4,
+  },
+  nowPlayingSubtitle: {
+    fontSize: 13,
+    color: Colors.secondaryText,
+  },
+  playingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    height: 20,
+    gap: 2,
+  },
+  playingBar: {
+    width: 3,
+    backgroundColor: Colors.accent,
+    borderRadius: 2,
+  },
+  playingBar1: {
+    height: 12,
+  },
+  playingBar2: {
+    height: 18,
+  },
+  playingBar3: {
+    height: 8,
+  },
+  queueList: {
+    maxHeight: 200,
+  },
+  queueItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  queueItemLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 10,
+  },
+  queueItemArtwork: {
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+    backgroundColor: Colors.cardBg,
+  },
+  queueItemInfo: {
+    flex: 1,
+  },
+  queueItemTitle: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: Colors.primaryText,
+    marginBottom: 2,
+  },
+  queueItemSubtitle: {
+    fontSize: 12,
+    color: Colors.secondaryText,
+  },
+  removeButton: {
+    padding: 8,
+  },
+  continueItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    gap: 12,
+  },
+  addToQueueText: {
+    color: Colors.accent,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  emptyQueue: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyQueueTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: Colors.primaryText,
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyQueueText: {
+    fontSize: 14,
+    color: Colors.secondaryText,
+    textAlign: 'center',
   },
 });

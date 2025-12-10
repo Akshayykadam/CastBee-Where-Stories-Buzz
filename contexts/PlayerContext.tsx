@@ -19,7 +19,41 @@ const STORAGE_KEYS = {
   PODCAST: 'podcat_current_podcast',
   POSITION: 'podcat_last_position',
   RATE: 'podcat_playback_rate',
+  EPISODE_PROGRESS: 'wavefy_episode_progress',
+  CONTINUATION_SETTINGS: 'wavefy_continuation_settings',
 };
+
+// Episode Progress Types
+export interface EpisodeProgressData {
+  episodeId: string;
+  podcastId: number;
+  position: number;
+  duration: number;
+  lastPlayedAt: string;
+  completed: boolean;
+  podcastTitle?: string;
+  podcastArtwork?: string;
+  episodeTitle?: string;
+  episodeArtwork?: string;
+  audioUrl?: string;
+}
+
+// Continuation Settings Types
+export interface ContinuationSettings {
+  autoplayEnabled: boolean;
+  autoQueueFromCreator: boolean;
+  moreLikeThisEnabled: boolean;
+  allowReplayCompleted: boolean;
+}
+
+const DEFAULT_CONTINUATION_SETTINGS: ContinuationSettings = {
+  autoplayEnabled: true,
+  autoQueueFromCreator: true,
+  moreLikeThisEnabled: true,
+  allowReplayCompleted: false,
+};
+
+export type ContinuationType = 'resume' | 'same_creator' | 'recommendation' | 'none';
 
 const setupPlayer = async () => {
   try {
@@ -49,10 +83,18 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
   const [currentEpisode, setCurrentEpisode] = useState<Episode | null>(null);
   const [currentPodcast, setCurrentPodcast] = useState<Podcast | null>(null);
   const [queue, setQueue] = useState<Episode[]>([]);
+  const [podcastEpisodes, setPodcastEpisodes] = useState<Episode[]>([]); // Episodes from current podcast
 
   // Manual state tracking for reliability
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Episode Progress State
+  const [episodeProgressMap, setEpisodeProgressMap] = useState<{ [id: string]: EpisodeProgressData }>({});
+
+  // Continuation Settings State
+  const [continuationSettings, setContinuationSettings] = useState<ContinuationSettings>(DEFAULT_CONTINUATION_SETTINGS);
+  const [lastContinuationType, setLastContinuationType] = useState<ContinuationType>('none');
 
   const updateState = useCallback(async () => {
     const state = await TrackPlayer.getPlaybackState();
@@ -84,6 +126,7 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
   const [isPlayerReady, setIsPlayerReady] = useState(false);
   const [sleepTimer, setSleepTimer] = useState<number | null>(null);
   const sleepTimerRef = useRef<NodeJS.Timeout | number | null>(null);
+  const sleepTimerTriggeredRef = useRef(false); // Track if sleep timer stopped playback
 
   const initialSeekPosition = useRef<number | null>(null);
   const isRestoring = useRef(true);
@@ -95,9 +138,115 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
       await setupPlayer();
       setIsPlayerReady(true);
       loadState();
+      loadEpisodeProgress();
+      loadContinuationSettings();
     };
     init();
   }, []);
+
+  // Load Episode Progress from AsyncStorage
+  const loadEpisodeProgress = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(STORAGE_KEYS.EPISODE_PROGRESS);
+      if (stored) {
+        setEpisodeProgressMap(JSON.parse(stored));
+      }
+    } catch (error) {
+      console.error('Failed to load episode progress:', error);
+    }
+  };
+
+  // Load Continuation Settings from AsyncStorage
+  const loadContinuationSettings = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(STORAGE_KEYS.CONTINUATION_SETTINGS);
+      if (stored) {
+        setContinuationSettings({ ...DEFAULT_CONTINUATION_SETTINGS, ...JSON.parse(stored) });
+      }
+    } catch (error) {
+      console.error('Failed to load continuation settings:', error);
+    }
+  };
+
+  // Save Episode Progress
+  const saveEpisodeProgress = async (newMap: { [id: string]: EpisodeProgressData }) => {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.EPISODE_PROGRESS, JSON.stringify(newMap));
+    } catch (error) {
+      console.error('Failed to save episode progress:', error);
+    }
+  };
+
+  // Save Continuation Settings
+  const saveContinuationSettings = async (settings: ContinuationSettings) => {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.CONTINUATION_SETTINGS, JSON.stringify(settings));
+    } catch (error) {
+      console.error('Failed to save continuation settings:', error);
+    }
+  };
+
+  // Update episode progress
+  const updateEpisodeProgress = useCallback((
+    episode: Episode,
+    podcast: Podcast,
+    position: number,
+    duration: number
+  ) => {
+    if (!episode || !podcast || duration <= 0) return;
+
+    const percentComplete = (position / duration) * 100;
+    const completed = percentComplete >= 95;
+
+    setEpisodeProgressMap(prev => {
+      const updated: EpisodeProgressData = {
+        episodeId: episode.id,
+        podcastId: podcast.collectionId,
+        position,
+        duration,
+        lastPlayedAt: new Date().toISOString(),
+        completed,
+        podcastTitle: podcast.collectionName,
+        podcastArtwork: podcast.artworkUrl600,
+        episodeTitle: episode.title,
+        episodeArtwork: episode.artwork,
+        audioUrl: episode.audioUrl,
+      };
+
+      const newMap = { ...prev, [episode.id]: updated };
+      saveEpisodeProgress(newMap);
+      return newMap;
+    });
+  }, []);
+
+  // Update continuation settings
+  const updateContinuationSetting = useCallback(<K extends keyof ContinuationSettings>(
+    key: K,
+    value: ContinuationSettings[K]
+  ) => {
+    setContinuationSettings(prev => {
+      const updated = { ...prev, [key]: value };
+      saveContinuationSettings(updated);
+      return updated;
+    });
+  }, []);
+
+  // Get half-played episodes (5-95% progress)
+  const getHalfPlayedEpisodes = useCallback((): EpisodeProgressData[] => {
+    return Object.values(episodeProgressMap)
+      .filter(p => {
+        if (p.completed) return false;
+        if (p.duration <= 0) return false;
+        const percent = (p.position / p.duration) * 100;
+        return percent >= 5 && percent < 95;
+      })
+      .sort((a, b) => new Date(b.lastPlayedAt).getTime() - new Date(a.lastPlayedAt).getTime());
+  }, [episodeProgressMap]);
+
+  // Check if episode is completed
+  const isEpisodeCompleted = useCallback((episodeId: string): boolean => {
+    return episodeProgressMap[episodeId]?.completed ?? false;
+  }, [episodeProgressMap]);
 
   // Load Persisted State
   const loadState = async () => {
@@ -163,22 +312,29 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
     if (isPlayerReady) TrackPlayer.setRate(playbackRate);
   }, [playbackRate, isPlayerReady]);
 
+  // Track progress and update episode progress data
   useEffect(() => {
-    if (progress.position > 0 && isPlaying) {
+    if (progress.position > 0 && isPlaying && currentEpisode && currentPodcast) {
       AsyncStorage.setItem(STORAGE_KEYS.POSITION, String(progress.position)).catch(() => { });
+
+      // Update episode progress every 10 seconds
+      if (Math.floor(progress.position) % 10 === 0) {
+        updateEpisodeProgress(currentEpisode, currentPodcast, progress.position, progress.duration);
+      }
     }
-  }, [progress.position, isPlaying]);
+  }, [progress.position, isPlaying, currentEpisode, currentPodcast, updateEpisodeProgress, progress.duration]);
 
 
-  const playEpisode = useCallback(async (episode: Episode, podcast: Podcast) => {
+  const playEpisode = useCallback(async (episode: Episode, podcast: Podcast, seekPosition?: number) => {
     if (!isPlayerReady) return;
 
     hasUserInteracted.current = true;
+    sleepTimerTriggeredRef.current = false; // Reset sleep timer flag
 
     // Reset seek if new episode
     if (episode.id !== currentEpisode?.id) {
-      initialSeekPosition.current = null;
-      AsyncStorage.setItem(STORAGE_KEYS.POSITION, '0').catch(() => { });
+      initialSeekPosition.current = seekPosition ?? null;
+      AsyncStorage.setItem(STORAGE_KEYS.POSITION, String(seekPosition ?? 0)).catch(() => { });
     }
 
     setCurrentEpisode(episode);
@@ -193,8 +349,20 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
       artwork: episode.artwork || podcast.artworkUrl600,
     });
 
+    // Seek to position if resuming
+    if (seekPosition && seekPosition > 0) {
+      await TrackPlayer.seekTo(seekPosition);
+    }
+
     await TrackPlayer.play();
     await TrackPlayer.setRate(playbackRate);
+
+    // Log analytics
+    console.log('[Analytics] Episode Started:', {
+      episodeId: episode.id,
+      podcastId: podcast.collectionId,
+      timestamp: new Date().toISOString(),
+    });
   }, [currentEpisode, isPlayerReady, playbackRate]);
 
   const togglePlayPause = useCallback(async () => {
@@ -207,6 +375,7 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
     } else {
       await TrackPlayer.play();
       setIsPlaying(true); // Optimistic update
+      sleepTimerTriggeredRef.current = false; // User manually resumed
     }
     setTimeout(updateState, 500); // veriy after delay
   }, [updateState]);
@@ -247,11 +416,17 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
 
     setSleepTimer(minutes);
     sleepTimerRef.current = setTimeout(async () => {
+      sleepTimerTriggeredRef.current = true; // Mark that sleep timer stopped playback
       await TrackPlayer.pause();
       setSleepTimer(null);
       sleepTimerRef.current = null;
+
+      console.log('[Analytics] Sleep Timer Triggered:', {
+        episodeId: currentEpisode?.id,
+        timestamp: new Date().toISOString(),
+      });
     }, minutes * 60 * 1000);
-  }, []);
+  }, [currentEpisode]);
 
   const cancelSleepTimer = useCallback(() => {
     if (sleepTimerRef.current) clearTimeout(sleepTimerRef.current as NodeJS.Timeout);
@@ -264,6 +439,189 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
       if (sleepTimerRef.current) clearTimeout(sleepTimerRef.current as NodeJS.Timeout);
     };
   }, []);
+
+  // Continuation Logic - Find next episode to play
+  const findNextEpisode = useCallback((): { episode: Episode; podcast: Podcast; type: ContinuationType } | null => {
+    if (!continuationSettings.autoplayEnabled) {
+      return null;
+    }
+
+    // Priority 1: Resume half-played episodes
+    const halfPlayed = getHalfPlayedEpisodes();
+    const resumeCandidate = halfPlayed.find(p => p.episodeId !== currentEpisode?.id && p.audioUrl);
+
+    if (resumeCandidate && resumeCandidate.audioUrl) {
+      const episode: Episode = {
+        id: resumeCandidate.episodeId,
+        title: resumeCandidate.episodeTitle || 'Untitled Episode',
+        description: '',
+        audioUrl: resumeCandidate.audioUrl,
+        pubDate: '',
+        duration: resumeCandidate.duration,
+        artwork: resumeCandidate.episodeArtwork || resumeCandidate.podcastArtwork || '',
+        podcastTitle: resumeCandidate.podcastTitle,
+      };
+      const podcast: Podcast = {
+        collectionId: resumeCandidate.podcastId,
+        collectionName: resumeCandidate.podcastTitle || 'Unknown Podcast',
+        artistName: '',
+        artworkUrl600: resumeCandidate.podcastArtwork || '',
+        artworkUrl100: resumeCandidate.podcastArtwork || '',
+        feedUrl: '',
+        trackCount: 0,
+        releaseDate: '',
+        primaryGenreName: '',
+        collectionViewUrl: '',
+      };
+      return { episode, podcast, type: 'resume' };
+    }
+
+    // Priority 2: Next episode from same podcaster
+    if (continuationSettings.autoQueueFromCreator && podcastEpisodes.length > 0 && currentEpisode) {
+      const currentIndex = podcastEpisodes.findIndex(e => e.id === currentEpisode.id);
+
+      // Try to find next unplayed episode
+      for (let i = currentIndex + 1; i < podcastEpisodes.length; i++) {
+        const candidate = podcastEpisodes[i];
+        if (continuationSettings.allowReplayCompleted || !isEpisodeCompleted(candidate.id)) {
+          if (currentPodcast) {
+            return { episode: candidate, podcast: currentPodcast, type: 'same_creator' };
+          }
+        }
+      }
+
+      // Wrap around to beginning
+      for (let i = 0; i < currentIndex; i++) {
+        const candidate = podcastEpisodes[i];
+        if (continuationSettings.allowReplayCompleted || !isEpisodeCompleted(candidate.id)) {
+          if (currentPodcast) {
+            return { episode: candidate, podcast: currentPodcast, type: 'same_creator' };
+          }
+        }
+      }
+    }
+
+    // Priority 3: More Like This (from liked episodes or followed podcasts)
+    // Note: This would require additional context about liked episodes
+    // For now, we return null and can enhance this later
+
+    return null;
+  }, [
+    continuationSettings,
+    getHalfPlayedEpisodes,
+    currentEpisode,
+    currentPodcast,
+    podcastEpisodes,
+    isEpisodeCompleted,
+  ]);
+
+  // Handle track end - trigger continuation
+  const handleTrackEnd = useCallback(async () => {
+    // Don't continue if sleep timer triggered the stop
+    if (sleepTimerTriggeredRef.current) {
+      console.log('[Analytics] Continuation Skipped: Sleep timer active');
+      return;
+    }
+
+    // Mark current episode as completed
+    if (currentEpisode && currentPodcast && progress.duration > 0) {
+      setEpisodeProgressMap(prev => {
+        const updated: EpisodeProgressData = {
+          episodeId: currentEpisode.id,
+          podcastId: currentPodcast.collectionId,
+          position: progress.duration,
+          duration: progress.duration,
+          lastPlayedAt: new Date().toISOString(),
+          completed: true,
+          podcastTitle: currentPodcast.collectionName,
+          podcastArtwork: currentPodcast.artworkUrl600,
+          episodeTitle: currentEpisode.title,
+          episodeArtwork: currentEpisode.artwork,
+          audioUrl: currentEpisode.audioUrl,
+        };
+        const newMap = { ...prev, [currentEpisode.id]: updated };
+        saveEpisodeProgress(newMap);
+        return newMap;
+      });
+
+      console.log('[Analytics] Episode Completed:', {
+        episodeId: currentEpisode.id,
+        podcastId: currentPodcast.collectionId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    // Check queue first
+    if (queue.length > 0) {
+      const nextEpisode = queue[0];
+      setQueue(prev => prev.slice(1));
+
+      let podcastToUse = currentPodcast;
+      if (nextEpisode.podcastTitle || nextEpisode.artistName) {
+        podcastToUse = {
+          collectionId: -1,
+          collectionName: nextEpisode.podcastTitle || 'Unknown Podcast',
+          artistName: nextEpisode.artistName || 'Unknown Artist',
+          artworkUrl600: nextEpisode.artwork || currentPodcast?.artworkUrl600 || '',
+          artworkUrl100: nextEpisode.artwork || currentPodcast?.artworkUrl100 || '',
+          feedUrl: '',
+          trackCount: 0,
+          releaseDate: '',
+          primaryGenreName: '',
+          collectionViewUrl: '',
+        };
+      }
+
+      if (podcastToUse) {
+        setLastContinuationType('same_creator');
+        console.log('[Analytics] Continuation: Playing from queue');
+        await playEpisode(nextEpisode, podcastToUse);
+        return;
+      }
+    }
+
+    // Find next episode using continuation logic
+    const next = findNextEpisode();
+    if (next) {
+      setLastContinuationType(next.type);
+      console.log('[Analytics] Continuation:', {
+        type: next.type,
+        nextEpisodeId: next.episode.id,
+        fromEpisodeId: currentEpisode?.id,
+        timestamp: new Date().toISOString(),
+      });
+
+      // If resuming, seek to saved position
+      if (next.type === 'resume') {
+        const saved = episodeProgressMap[next.episode.id];
+        await playEpisode(next.episode, next.podcast, saved?.position);
+      } else {
+        await playEpisode(next.episode, next.podcast);
+      }
+    } else {
+      setLastContinuationType('none');
+      console.log('[Analytics] Continuation: No next episode available');
+    }
+  }, [
+    currentEpisode,
+    currentPodcast,
+    progress.duration,
+    queue,
+    findNextEpisode,
+    playEpisode,
+    episodeProgressMap,
+  ]);
+
+  // Listen for track end event
+  useTrackPlayerEvents([TrackPlayerEvent.PlaybackQueueEnded], async (event) => {
+    if (event.type === TrackPlayerEvent.PlaybackQueueEnded) {
+      console.log('PlayerContext - Track Ended');
+      // Small delay to ensure state is settled
+      setTimeout(() => {
+        handleTrackEnd();
+      }, 500);
+    }
+  });
 
   const playNext = useCallback(async () => {
     if (queue.length > 0) {
@@ -289,8 +647,19 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
       if (podcastToUse) {
         await playEpisode(nextEpisode, podcastToUse);
       }
+    } else {
+      // Try continuation logic
+      const next = findNextEpisode();
+      if (next) {
+        if (next.type === 'resume') {
+          const saved = episodeProgressMap[next.episode.id];
+          await playEpisode(next.episode, next.podcast, saved?.position);
+        } else {
+          await playEpisode(next.episode, next.podcast);
+        }
+      }
     }
-  }, [queue, currentPodcast, playEpisode]);
+  }, [queue, currentPodcast, playEpisode, findNextEpisode, episodeProgressMap]);
 
   const playPrevious = useCallback(async () => {
     const p = await TrackPlayer.getProgress();
@@ -337,13 +706,23 @@ export const [PlayerProvider, usePlayer] = createContextHook(() => {
     skipBackward,
     togglePlaybackSpeed,
     changePlaybackRate,
-    addToQueue: (ep: Episode) => setQueue(q => [...q, ep]), // Simplified
+    addToQueue: (ep: Episode) => setQueue(q => [...q, ep]),
     setQueue,
     playNext,
     playPrevious,
     sleepTimer,
     startSleepTimer,
     cancelSleepTimer,
+    // Episode Progress
+    episodeProgressMap,
+    getHalfPlayedEpisodes,
+    isEpisodeCompleted,
+    // Continuation
+    continuationSettings,
+    updateContinuationSetting,
+    lastContinuationType,
+    // Podcast Episodes (for continuation)
+    podcastEpisodes,
+    setPodcastEpisodes,
   };
 });
-

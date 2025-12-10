@@ -1,4 +1,4 @@
-package com.akshaykadam.castbee
+package com.akshaykadam.wavefy
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build

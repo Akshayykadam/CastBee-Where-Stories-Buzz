@@ -109,7 +109,7 @@ const formatDate = (dateString: string): string => {
 export default function PodcastDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { playEpisode, currentEpisode, isPlaying, togglePlayPause } = usePlayer();
+  const { playEpisode, currentEpisode, isPlaying, togglePlayPause, setPodcastEpisodes } = usePlayer();
   const { isFollowing, toggleFollow } = useFollowedPodcasts();
   const { downloadEpisode, isDownloaded, getDownloadProgress } = useDownloads();
 
@@ -129,6 +129,13 @@ export default function PodcastDetailScreen() {
     queryFn: () => parseRSS(podcast?.feedUrl || ""),
     enabled: !!podcast?.feedUrl,
   });
+
+  // Update podcast episodes in PlayerContext for continuation logic
+  React.useEffect(() => {
+    if (episodes.length > 0) {
+      setPodcastEpisodes(episodes);
+    }
+  }, [episodes, setPodcastEpisodes]);
 
   if (isLoading) {
     return (
